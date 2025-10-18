@@ -12,7 +12,6 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
   );
   const [errors, setErrors] = useState<number[]>([]);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
-  const [originalContent, setOriginalContent] = useState(initialValue || `{}`); // Store original uncollapsed content
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const lineNumberRef = useRef<HTMLDivElement>(null);
@@ -48,8 +47,6 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
     setContent(newContent);
-    setOriginalContent(newContent); // Update original content
-    setCollapsed(new Set()); // Reset collapse state when editing
     validateJSON(newContent);
     onChange?.(newContent);
   };
@@ -67,11 +64,9 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
 
   const handleFormat = () => {
     try {
-      const parsed = JSON.parse(originalContent);
+      const parsed = JSON.parse(content);
       const formatted = JSON.stringify(parsed, null, 2);
       setContent(formatted);
-      setOriginalContent(formatted);
-      setCollapsed(new Set()); // Reset collapse state
       setErrors([]);
       onChange?.(formatted);
     } catch (e) {
@@ -143,7 +138,6 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
   }, [getTokenColor]);
 
   const lines = useMemo(() => content.split('\n'), [content]);
-  const originalLines = useMemo(() => originalContent.split('\n'), [originalContent]);
   
   const highlightedLines = useMemo(
     () => lines.map((line, i) => highlightLine(line, i)),
@@ -174,17 +168,26 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
 
   const getCollapsibleRanges = useMemo(() => {
     const ranges = new Map<number, number>();
-    originalLines.forEach((line, i) => {
+    lines.forEach((line, i) => {
       const trimmed = line.trim();
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        const endLine = findMatchingBracket(originalLines, i);
+        const endLine = findMatchingBracket(lines, i);
         if (endLine > i) {
           ranges.set(i, endLine);
         }
       }
     });
     return ranges;
-  }, [originalLines, findMatchingBracket]);
+  }, [lines, findMatchingBracket]);
+
+  const isLineVisible = useCallback((lineIndex: number): boolean => {
+    for (const [start, end] of getCollapsibleRanges.entries()) {
+      if (collapsed.has(start) && lineIndex > start && lineIndex <= end) {
+        return false;
+      }
+    }
+    return true;
+  }, [collapsed, getCollapsibleRanges]);
 
   const toggleCollapse = useCallback((lineIndex: number) => {
     if (getCollapsibleRanges.has(lineIndex)) {
@@ -201,64 +204,17 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
   }, [getCollapsibleRanges]);
 
   const getCollapsedPreview = useCallback((startLine: number): string => {
-    const line = originalLines[startLine];
+    const line = lines[startLine];
+    const endLine = getCollapsibleRanges.get(startLine) || startLine;
     const startChar = line.trim()[0];
     const endChar = startChar === '{' ? '}' : ']';
-    
-    // Extract key name if exists
-    const keyMatch = line.match(/"([^"]+)":/);
-    const keyName = keyMatch ? `"${keyMatch[1]}": ` : '';
-    
-    return `${keyName}${startChar}...${endChar}`;
-  }, [originalLines]);
+    const itemCount = endLine - startLine;
+    return `${startChar}...${endChar} // ${itemCount} ${itemCount === 1 ? 'line' : 'lines'}`;
+  }, [lines, getCollapsibleRanges]);
 
-  // Generate display content based on collapsed state
-  const displayContent = useMemo(() => {
-    if (collapsed.size === 0) return originalContent;
-    
-    const displayLines: string[] = [];
-    let i = 0;
-    
-    while (i < originalLines.length) {
-      if (collapsed.has(i) && getCollapsibleRanges.has(i)) {
-        // Add collapsed preview
-        const endLine = getCollapsibleRanges.get(i)!;
-        const indent = originalLines[i].match(/^\s*/)?.[0] || '';
-        displayLines.push(indent + getCollapsedPreview(i));
-        i = endLine + 1;
-      } else {
-        displayLines.push(originalLines[i]);
-        i++;
-      }
-    }
-    
-    return displayLines.join('\n');
-  }, [originalContent, originalLines, collapsed, getCollapsibleRanges, getCollapsedPreview]);
-
-  // Update content when collapse state changes
-  React.useEffect(() => {
-    setContent(displayContent);
-  }, [displayContent]);
-
-  const lineToOriginalMap = useMemo(() => {
-    const map = new Map<number, number>();
-    let displayLineIndex = 0;
-    let originalLineIndex = 0;
-    
-    while (originalLineIndex < originalLines.length) {
-      if (collapsed.has(originalLineIndex) && getCollapsibleRanges.has(originalLineIndex)) {
-        map.set(displayLineIndex, originalLineIndex);
-        displayLineIndex++;
-        originalLineIndex = getCollapsibleRanges.get(originalLineIndex)! + 1;
-      } else {
-        map.set(displayLineIndex, originalLineIndex);
-        displayLineIndex++;
-        originalLineIndex++;
-      }
-    }
-    
-    return map;
-  }, [originalLines, collapsed, getCollapsibleRanges]);
+  const visibleLines = useMemo(() => {
+    return lines.map((_, i) => isLineVisible(i));
+  }, [lines, isLineVisible]);
 
   return (
     <div className="w-full h-full bg-slate-900 text-slate-100 flex flex-col border border-slate-700 rounded-xl">
@@ -292,36 +248,32 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
           style={{ lineHeight: LINE_HEIGHT, paddingTop: EDITOR_PADDING, paddingBottom: EDITOR_PADDING }}
           aria-hidden="true"
         >
-          {lines.map((_, displayIdx) => {
-            const originalIdx = lineToOriginalMap.get(displayIdx) ?? displayIdx;
-            const isCollapsible = getCollapsibleRanges.has(originalIdx);
-            const isCollapsed = collapsed.has(originalIdx);
-            
-            return (
+          {lines.map((_, i) => (
+            visibleLines[i] && (
               <div
-                key={displayIdx}
+                key={i}
                 className={`flex items-center justify-end gap-1 ${
-                  errors.includes(originalIdx) ? 'bg-red-900/50 text-red-400' : ''
+                  errors.includes(i) ? 'bg-red-900/50 text-red-400' : ''
                 }`}
                 style={{ lineHeight: LINE_HEIGHT, height: LINE_HEIGHT }}
               >
-                {isCollapsible && (
+                {getCollapsibleRanges.has(i) && (
                   <button
-                    onClick={() => toggleCollapse(originalIdx)}
+                    onClick={() => toggleCollapse(i)}
                     className="hover:text-slate-300 transition-colors"
-                    aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                    aria-label={collapsed.has(i) ? 'Expand' : 'Collapse'}
                   >
-                    {isCollapsed ? (
+                    {collapsed.has(i) ? (
                       <ChevronRight size={12} />
                     ) : (
                       <ChevronDown size={12} />
                     )}
                   </button>
                 )}
-                <span>{originalIdx + 1}</span>
+                <span>{i + 1}</span>
               </div>
-            );
-          })}
+            )
+          ))}
         </div>
 
         {/* Editor container */}
@@ -337,22 +289,25 @@ const JSONEditor: React.FC<JSONEditorProps> = ({ initialValue, onChange }) => {
               className="font-mono text-sm m-0 p-4 whitespace-pre break-words text-transparent bg-transparent"
               style={{ lineHeight: LINE_HEIGHT }}
             >
-              {lines.map((_, i) => {
-                const originalIdx = lineToOriginalMap.get(i) ?? i;
-                const isCollapsed = collapsed.has(originalIdx);
-                
-                return (
+              {lines.map((_, i) => (
+                visibleLines[i] && (
                   <div
                     key={i}
                     className={`${
-                      errors.includes(originalIdx) ? 'bg-red-900/30' : ''
-                    } ${isCollapsed ? 'text-gray-400 italic' : ''}`}
+                      errors.includes(i) ? 'bg-red-900/30' : ''
+                    }`}
                     style={{ lineHeight: LINE_HEIGHT, height: LINE_HEIGHT }}
                   >
-                    {highlightedLines[i]}
+                    {collapsed.has(i) ? (
+                      <span className="text-gray-400 italic">
+                        {getCollapsedPreview(i)}
+                      </span>
+                    ) : (
+                      highlightedLines[i]
+                    )}
                   </div>
-                );
-              })}
+                )
+              ))}
             </pre>
           </div>
 
