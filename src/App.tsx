@@ -2,8 +2,7 @@ import JsonEditor from "./components/jsonEditor"
 
 function App() {
 const handleJsonChange = (jsonString: string) => {
-    // Bạn có thể làm gì đó với chuỗi JSON mới ở đây
-    // console.log("JSON updated:", jsonString);
+    console.log("JSON updated:", jsonString);
   };
 
   const initialJson = `{
